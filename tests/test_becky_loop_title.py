@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -144,3 +145,31 @@ async def test_auxiliary_provider_uses_fixed_task_and_disables_tools(monkeypatch
             "timeout": 8,
         }
     ]
+
+
+async def test_auxiliary_provider_suppresses_raw_provider_error_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import agent.auxiliary_client as auxiliary_client
+
+    private_marker = "private-provider-body-and-url"
+
+    async def failing_call_llm(**kwargs: Any) -> SimpleNamespace:
+        del kwargs
+        auxiliary_client.logger.info(
+            "Auxiliary retry exposed: %s", RuntimeError(private_marker)
+        )
+        raise RuntimeError(private_marker)
+
+    monkeypatch.setattr(auxiliary_client, "async_call_llm", failing_call_llm)
+    caplog.set_level(logging.INFO, logger=auxiliary_client.__name__)
+
+    with pytest.raises(TitleUnavailable, match="^title_unavailable$"):
+        await AsyncAuxiliaryTitleProvider().complete(
+            messages=[{"role": "system", "content": "fixed"}],
+            timeout=8,
+            max_tokens=32,
+        )
+
+    assert private_marker not in caplog.text

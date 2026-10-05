@@ -54,17 +54,21 @@ class AsyncAuxiliaryTitleProvider:
         bounded_timeout = min(timeout, _TITLE_TIMEOUT_SECONDS)
         bounded_tokens = max(1, min(max_tokens, _TITLE_MAX_TOKENS))
         try:
-            from agent.auxiliary_client import async_call_llm
+            from agent.auxiliary_client import (
+                async_call_llm,
+                content_safe_auxiliary_logging,
+            )
 
-            async with asyncio.timeout(bounded_timeout):
-                response = await async_call_llm(
-                    task="becky_loop_title",
-                    messages=messages,
-                    tools=None,
-                    temperature=0,
-                    max_tokens=bounded_tokens,
-                    timeout=bounded_timeout,
-                )
+            with content_safe_auxiliary_logging():
+                async with asyncio.timeout(bounded_timeout):
+                    response = await async_call_llm(
+                        task="becky_loop_title",
+                        messages=messages,
+                        tools=None,
+                        temperature=0,
+                        max_tokens=bounded_tokens,
+                        timeout=bounded_timeout,
+                    )
         except TimeoutError:
             raise TitleUnavailable() from None
         except Exception:
