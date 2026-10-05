@@ -59,6 +59,12 @@ from gateway.becky_loop_reply import (
     LoopReplyGenerator,
     ReplyGenerator,
 )
+from gateway.becky_loop_title import (
+    AsyncAuxiliaryTitleProvider,
+    BeckyLoopTitleGenerator,
+    TitleGenerator,
+    TitleUnavailable,
+)
 from gateway.telegram_mtproto import MtprotoTopicControlError
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Headers, Request, Response
@@ -81,7 +87,15 @@ _READY = {
 # The new-topic handoff is intentionally private: it is accepted only on the
 # authenticated bridge and is not advertised to the dashboard's public method
 # surface.
-_METHODS = ["list", "summarize", "close", "reopen", "reply", "reply_retry"]
+_METHODS = [
+    "list",
+    "summarize",
+    "close",
+    "reopen",
+    "reply",
+    "reply_retry",
+    "generate_title",
+]
 _SAFE_REMOTE_CODES = frozenset({
     "actions_unavailable",
     "conversation_too_large",
@@ -100,6 +114,7 @@ _SAFE_REMOTE_CODES = frozenset({
     "summary_timeout",
     "start_loop_incomplete",
     "start_loop_unavailable",
+    "title_generation_unavailable",
     "topic_already_closed",
     "topic_already_open",
     "topic_control_unavailable",
@@ -118,6 +133,7 @@ _MAX_REQUEST_BYTES = 65_536
 _MAX_RESPONSE_BYTES = 262_144
 _SUMMARY_DEADLINE_SECONDS = 30.0
 _REPLY_DEADLINE_SECONDS = 30.0
+_TITLE_DEADLINE_SECONDS = 10.0
 _REPLY_ATTEMPT_TTL_SECONDS = 15 * 60.0
 _MAX_REPLY_ATTEMPTS = 256
 _CLOSE_RESULT_TTL_SECONDS = 15 * 60.0
@@ -1012,6 +1028,7 @@ class BeckyLoopsBridgeServer:
         topic_sender: TopicSender | None = None,
         topic_controller: TopicController | None = None,
         reply_generator: ReplyGenerator | None = None,
+        title_generator: TitleGenerator | None = None,
         agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
         action_journal: ActionJournal | None = None,
         one_shot_executor: ActionExecutor | None = None,
@@ -1031,6 +1048,7 @@ class BeckyLoopsBridgeServer:
         self.topic_sender = topic_sender
         self.topic_controller = topic_controller
         self.reply_generator = reply_generator
+        self.title_generator = title_generator
         self.agent_dispatcher = agent_dispatcher
         self.action_journal = action_journal
         self.one_shot_executor = one_shot_executor
@@ -1233,6 +1251,21 @@ class BeckyLoopsBridgeServer:
                 return _PROTOCOL_FAILURE
             rows = self.store.list_topics(self.config.chat_id)
             return {"loops": [self._public_index(row) for row in rows]}
+        if method == "becky.loops.generate_title":
+            if not self._valid_generate_title_params(params):
+                return _PROTOCOL_FAILURE
+            if self.title_generator is None:
+                raise _RemoteFailure("title_generation_unavailable")
+            try:
+                title = await self.title_generator.generate(
+                    message=params["message"].strip(),
+                    deadline=(
+                        asyncio.get_running_loop().time() + _TITLE_DEADLINE_SECONDS
+                    ),
+                )
+            except TitleUnavailable:
+                raise _RemoteFailure("title_generation_unavailable") from None
+            return {"schema_version": "1", "title": title}
         if method == "becky.loops.summarize":
             if set(params) != {"source_ref", "expected_revision", "force"}:
                 return _PROTOCOL_FAILURE
@@ -2185,6 +2218,15 @@ class BeckyLoopsBridgeServer:
         }
 
     @staticmethod
+    def _valid_generate_title_params(params: dict[str, Any]) -> bool:
+        message = params.get("message")
+        return (
+            set(params) == {"message"}
+            and isinstance(message, str)
+            and 1 <= len(message.strip()) <= 4_000
+        )
+
+    @staticmethod
     def _valid_reply_params(params: dict[str, Any]) -> bool:
         text = params.get("text")
         return (
@@ -2634,6 +2676,7 @@ async def start_becky_loops_bridge(
     topic_sender: TopicSender | None = None,
     topic_controller: TopicController | None = None,
     reply_generator: ReplyGenerator | None = None,
+    title_generator: TitleGenerator | None = None,
     agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
     action_journal: ActionJournal | None = None,
     one_shot_executor: ActionExecutor | None = None,
@@ -2790,6 +2833,11 @@ async def start_becky_loops_bridge(
             action_journal=action_journal,
             one_shot_executor=one_shot_executor,
             action_loop_starter=action_loop_starter,
+            title_generator=(
+                title_generator
+                if title_generator is not None
+                else BeckyLoopTitleGenerator(AsyncAuxiliaryTitleProvider())
+            ),
             reply_generator=(
                 reply_generator
                 if reply_generator is not None
