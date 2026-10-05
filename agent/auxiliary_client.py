@@ -132,6 +132,36 @@ from utils import base_url_host_matches, base_url_hostname, base_url_origin, env
 
 logger = logging.getLogger(__name__)
 
+_CONTENT_SAFE_AUXILIARY_LOGGING: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar("content_safe_auxiliary_logging", default=False)
+)
+
+
+class _ContentSafeAuxiliaryLogFilter(logging.Filter):
+    """Remove provider-controlled details for explicitly protected calls."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _CONTENT_SAFE_AUXILIARY_LOGGING.get():
+            record.msg = "Auxiliary call event (details suppressed)"
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
+logger.addFilter(_ContentSafeAuxiliaryLogFilter())
+
+
+@contextlib.contextmanager
+def content_safe_auxiliary_logging():
+    """Suppress content-bearing log details for the current task only."""
+    token = _CONTENT_SAFE_AUXILIARY_LOGGING.set(True)
+    try:
+        yield
+    finally:
+        _CONTENT_SAFE_AUXILIARY_LOGGING.reset(token)
+
 
 # resolve_provider_client fall-through dedup: misconfigured-provider warnings fire on every
 # retry, so only the first per process surfaces. Separate sets let tests clear each branch.

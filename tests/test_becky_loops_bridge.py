@@ -16,6 +16,11 @@ from gateway.becky_loop_summarizer import (
     _ConversationTooLarge,
     _SummaryValidationError,
 )
+from gateway.becky_loop_title import (
+    AsyncAuxiliaryTitleProvider,
+    BeckyLoopTitleGenerator,
+    TitleUnavailable,
+)
 from gateway import becky_loops
 from gateway.becky_loop_reply import ReplyUnavailable
 from gateway.becky_loops import BeckyLoopsBridgeServer, BeckyLoopsConfig
@@ -250,6 +255,19 @@ class FakeReplyGenerator:
             "comment": comment,
             "deadline": deadline,
         })
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return str(outcome)
+
+
+class FakeTitleGenerator:
+    def __init__(self, outcomes: list[object] | None = None) -> None:
+        self.outcomes = list(outcomes or ["Compare Calgary Flights"])
+        self.calls: list[dict[str, Any]] = []
+
+    async def generate(self, *, message: str, deadline: float) -> str:
+        self.calls.append({"message": message, "deadline": deadline})
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -831,6 +849,7 @@ async def test_bridge_auth_ready_capabilities_and_list() -> None:
                     "reopen",
                     "reply",
                     "reply_retry",
+                    "generate_title",
                 ],
                 "topic_control": "unavailable",
                 "topic_reply": "unavailable",
@@ -844,6 +863,146 @@ async def test_bridge_auth_ready_capabilities_and_list() -> None:
             assert "session_id" not in listed["result"]["loops"][0]
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertise_generate_title_exactly_once() -> None:
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        title_generator=FakeTitleGenerator(),
+    )
+
+    capabilities = await server._method("becky.loops.capabilities", {})
+
+    assert capabilities["methods"].count("generate_title") == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_title_uses_exact_wire_contract() -> None:
+    generator = FakeTitleGenerator(["Compare Calgary Flights"])
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        title_generator=generator,
+    )
+
+    response = await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "becky.loops.generate_title",
+                "params": {"message": "Compare Calgary flight options"},
+            }
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {"schema_version": "1", "title": "Compare Calgary Flights"},
+    }
+    assert generator.calls[0]["message"] == "Compare Calgary flight options"
+    assert generator.calls[0]["deadline"] > asyncio.get_running_loop().time()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"message": "Valid", "extra": True},
+        {"message": ""},
+        {"message": "   "},
+        {"message": "x" * 4_001},
+        {"message": 42},
+    ],
+)
+async def test_generate_title_rejects_extra_missing_blank_and_oversized_params(
+    params: dict[str, Any],
+) -> None:
+    generator = FakeTitleGenerator()
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        title_generator=generator,
+    )
+
+    response = await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "becky.loops.generate_title",
+                "params": params,
+            }
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "error": {"code": -32600, "message": "protocol"},
+    }
+    assert generator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_generate_title_maps_provider_failure_to_safe_remote_code() -> None:
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+        title_generator=FakeTitleGenerator([TitleUnavailable()]),
+    )
+
+    response = await server._dispatch(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "becky.loops.generate_title",
+                "params": {"message": "Compare Calgary flight options"},
+            }
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "error": {"code": -32000, "message": "title_generation_unavailable"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_bridge_wires_default_title_generator_without_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeServer:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(becky_loops, "SessionDBBeckyLoopsStore", lambda *args, **kwargs: FakeStore())
+    monkeypatch.setattr(becky_loops, "BeckyLoopsBridgeServer", FakeServer)
+
+    server = await becky_loops.start_becky_loops_bridge(
+        config=config(),
+        db=object(),
+        summarizer=FakeSummarizer(),
+    )
+
+    assert server is not None
+    assert isinstance(captured["title_generator"], BeckyLoopTitleGenerator)
+    assert isinstance(captured["title_generator"]._provider, AsyncAuxiliaryTitleProvider)
 
 
 @pytest.mark.asyncio
