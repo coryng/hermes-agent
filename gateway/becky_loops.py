@@ -604,6 +604,10 @@ class SessionDBBeckyLoopsStore:
         session_store: Any | None = None,
         managed_topic_ids: set[str] | frozenset[str] | None = None,
     ) -> None:
+        from persistence_assembly import Persistence
+        if isinstance(db, Persistence):
+            from gateway.becky_persistence import BeckyPersistence
+            db = BeckyPersistence(db)
         self._db = db
         self._session_store = session_store
         self._managed_topic_ids = frozenset(str(value).strip() for value in (managed_topic_ids or ()) if str(value).strip())

@@ -497,7 +497,11 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
         def __init__(self) -> None:
             self.bindings = []
 
-        def bind_telegram_topic(self, **kwargs) -> None:
+        @property
+        def routing(self):
+            return self
+
+        def bind_topic(self, **kwargs) -> None:
             self.bindings.append(kwargs)
 
     adapter = FakeTelegramAdapter()
@@ -506,7 +510,7 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
     runner._shutdown_event = asyncio.Event()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner.session_store = FakeSessionStore()
-    runner._session_db = SimpleNamespace(_db=session_db)
+    runner.session_store.persistence = session_db
 
     await runner._dispatch_becky_agent_reply(
         chat_id="-1001234567890",
@@ -524,6 +528,8 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
             "session_key": "agent:main:telegram:group:-1001234567890:3964",
             "session_id": "session-1",
             "profile_name": "default",
+            "expected_session_id": None,
+            "move_session": False,
         }
     ]
     assert adapter.event.text == "Please turn on the porch light."

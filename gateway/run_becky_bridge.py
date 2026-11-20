@@ -321,7 +321,18 @@ class GatewayBeckyBridgeMixin:
 
         session_ids: list[str] = []
         session_db = getattr(self, "_session_db", None)
-        if session_db is not None:
+        from persistence_assembly import Persistence
+        if isinstance(session_db, Persistence):
+            from gateway.becky_loops import SessionDBBeckyLoopsStore
+            try:
+                await asyncio.to_thread(
+                    SessionDBBeckyLoopsStore(session_db).end_topic_session,
+                    chat_id=str(chat_id), thread_id=str(thread_id),
+                    reason="telegram_topic_closed",
+                )
+            except Exception:
+                logger.warning("Telegram /close session finalization failed", exc_info=True)
+        elif session_db is not None:
             try:
                 binding = await session_db.get_telegram_topic_binding(
                     chat_id=str(chat_id), thread_id=str(thread_id)
@@ -443,7 +454,9 @@ class GatewayBeckyBridgeMixin:
 
             config = load_becky_loops_config()
             self._becky_loops_config = config
-            db = getattr(self._session_db, "_db", None)
+            from persistence_assembly import Persistence
+            handle = self._session_db
+            db = handle if isinstance(handle, Persistence) else getattr(handle, "_db", None)
             if config is None or db is None:
                 return
             telegram_adapter = self.adapters.get(Platform.TELEGRAM)
