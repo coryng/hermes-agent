@@ -318,6 +318,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             await self._record_room_silence_decision(
                 session_key, agent_result, _intentional_silence,
                 display_kind=prepared.persist_user_display_kind, reply_expected=event.reply_expected)
+            self._register_becky_auto_close_after_delivery(
+                event=event, source=source, session_key=session_key,
+                run_generation=run_generation, agent_result=agent_result,
+            )
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,

@@ -3319,7 +3319,11 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 from gateway.run_runtime_init import GatewayRuntimeInitMixin
 
 
+from gateway.run_becky_bridge import GatewayBeckyBridgeMixin
+
+
 class GatewayRunner(
+    GatewayBeckyBridgeMixin,
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,

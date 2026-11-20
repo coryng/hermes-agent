@@ -1826,6 +1826,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        stop_becky_bridge = getattr(self, "_stop_becky_loops_bridge", None)
+        if callable(stop_becky_bridge):
+            await stop_becky_bridge()
         from gateway.run_runtime import drain_gateway_runtime
         await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()

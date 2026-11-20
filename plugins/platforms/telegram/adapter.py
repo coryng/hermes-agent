@@ -6514,10 +6514,74 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        if not self._should_process_message(msg, is_command=True):
-            return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        if self._is_becky_close_command(
+            msg.text, getattr(getattr(self, "_bot", None), "username", None)
+        ):
+            # Intake authorization permits pairing candidates; mutations need the
+            # full gateway check and all configured chat/topic gates.
+            if not self._should_process_message(msg, is_command=True):
+                return
+            user_id = str(getattr(getattr(msg, "from_user", None), "id", "") or "").strip()
+            runner = getattr(self, "gateway_runner", None)
+            authorize = getattr(runner, "_is_user_authorized_for_source", None)
+            if not user_id or not callable(authorize):
+                return
+            try:
+                source = self._source_from_message_for_auth(msg)
+                source.profile = getattr(self, "_owner_profile", None)
+                canonicalize = getattr(self, "_canonicalize", None)
+                if callable(canonicalize):
+                    canonicalize(source)
+                if getattr(source, "profile_route_rejected", False) is True or not authorize(source):
+                    return
+            except Exception:
+                logger.warning("Telegram /close authorization failed", exc_info=True)
+                return
+            handler = getattr(self, "_becky_close_command_handler", None)
+            chat_id = str(getattr(getattr(msg, "chat", None), "id", "")).strip()
+            thread_id = self._effective_message_thread_id(msg) or ""
+            user_id = str(getattr(getattr(msg, "from_user", None), "id", "")).strip()
+            message_id = str(getattr(msg, "message_id", "")).strip()
+            if not callable(handler):
+                result = "Topic close is unavailable."
+            else:
+                try:
+                    result = await handler(
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        message_id=message_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error("Telegram /close command failed", exc_info=True)
+                    result = "Topic close is unavailable."
+            if result:
+                ack_metadata: Dict[str, Any] = {
+                    "thread_id": thread_id,
+                    "notify": True,
+                }
+                if thread_id and chat_id.isdecimal() and int(chat_id) > 0:
+                    ack_metadata.update(
+                        {
+                            "telegram_dm_topic_reply_fallback": True,
+                            "direct_messages_topic_id": thread_id,
+                        }
+                    )
+                    if message_id:
+                        ack_metadata["telegram_reply_to_message_id"] = message_id
+                await self.send(
+                    chat_id,
+                    str(result),
+                    metadata=ack_metadata,
+                )
+            return
+
+        if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -6527,6 +6591,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             self._enqueue_text_event(event)
             return
         await self.handle_message(event)
+
+    def set_becky_close_command_handler(self, handler: Any | None) -> None:
+        """Install the authenticated, non-LLM Telegram /close handler."""
+        self._becky_close_command_handler = handler
+
+    @staticmethod
+    def _is_becky_close_command(
+        text: str, bot_username: Optional[str] = None
+    ) -> bool:
+        parts = str(text).strip().split()
+        if len(parts) != 1:
+            return False
+        command = parts[0].casefold()
+        if command == "/close":
+            return True
+        if not command.startswith("/close@"):
+            return False
+        target = command.removeprefix("/close@").strip()
+        configured = str(bot_username or "").lstrip("@").casefold()
+        return bool(target and configured and target == configured)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""

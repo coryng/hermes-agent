@@ -713,6 +713,8 @@ class GatewayTurnPersistenceMixin:
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
+                if response and not _intentional_silence:
+                    event._hermes_delivery_succeeded = True
             return None
 
         return response

@@ -881,6 +881,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
+        if platform == Platform.TELEGRAM:
+            self._refresh_becky_telegram_adapter(adapter)
         if platform == Platform.API_SERVER:
             from gateway.session_api_turn import recover_api_turns
             recover_api_turns(adapter)

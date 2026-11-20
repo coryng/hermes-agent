@@ -4462,6 +4462,7 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        event._hermes_delivery_succeeded = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4530,9 +4531,14 @@ class BasePlatformAdapter(ABC):
                         or _tts_paths or _tts_caption_delivered:
                     self.pause_typing_for_chat(event.source.chat_id)
                 if text_content and not _tts_caption_delivered:
+                    def _record_final_text(result):
+                        _record_delivery(result)
+                        raw = getattr(result, "raw_response", None)
+                        partial = isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+                        event._hermes_delivery_succeeded = bool(getattr(result, "success", False)) and not partial
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                        is_ephemeral_response, _ephemeral_ttl, _record_final_text)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
